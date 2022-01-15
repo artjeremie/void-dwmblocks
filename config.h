@@ -1,8 +1,9 @@
 #define CMDLENGTH 60
-#define DELIMITER " | "
+#define DELIMITER " "
 #define CLICKABLE_BLOCKS 0
 
 const Block blocks[] = {
+    BLOCK("sb-torrent",     20,     14),
     BLOCK("sb-net",         1,      15),
     BLOCK("sb-xbps",        180,    16),
     BLOCK("sb-audio",       0,      17),
