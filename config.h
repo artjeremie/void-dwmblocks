@@ -3,13 +3,13 @@
 #define CLICKABLE_BLOCKS 0
 
 const Block blocks[] = {
-    BLOCK("sb-torrent",     1,     14),
+    BLOCK("sb-torrent",     20,     14),
     BLOCK("sb-net",         1,      15),
-    BLOCK("sb-xbps",        180,    16),
+    BLOCK("sb-xbps",        10800,  16),
     BLOCK("sb-audio",       0,      17),
     BLOCK("sb-mail",        180,    18),
     BLOCK("sb-news",        0,      19),
-    BLOCK("sb-forecast",    1800,   20),
+    BLOCK("sb-forecast",    18000,  20),
     BLOCK("sb-mem",         10,     21),
     BLOCK("sb-gpu",         10,     22),
     BLOCK("sb-cpu",         10,     23),
