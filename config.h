@@ -3,7 +3,8 @@
 #define CLICKABLE_BLOCKS 0
 
 const Block blocks[] = {
-    BLOCK("sb-net",         1,      16),
+    BLOCK("sb-net",         1,      15),
+    BLOCK("sb-xbps",        180,    16),
     BLOCK("sb-audio",       0,      17),
     BLOCK("sb-mail",        180,    18),
     BLOCK("sb-news",        0,      19),
