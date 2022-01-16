@@ -7,7 +7,7 @@ const Block blocks[] = {
     BLOCK("sb-net",         1,      15),
     BLOCK("sb-xbps",        10800,  16),
     BLOCK("sb-audio",       0,      17),
-    BLOCK("sb-mail",        600,    18),
+    BLOCK("sb-mail",        0,      18),
     BLOCK("sb-news",        0,      19),
     BLOCK("sb-forecast",    18000,  20),
     BLOCK("sb-mem",         10,     21),
