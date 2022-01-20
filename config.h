@@ -15,5 +15,6 @@ const Block blocks[] = {
     BLOCK("sb-cpu",         10,     23),
     BLOCK("sb-time",        1,      24),
     BLOCK("sb-date",        1,      25),
+    BLOCK("sb-uptime",      1,      26),
 };
 
