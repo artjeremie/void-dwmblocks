@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 #include <X11/Xlib.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,11 +9,11 @@
 #include <time.h>
 #include <unistd.h>
 
-#define POLL_INTERVAL 50
 #define LEN(arr) (sizeof(arr) / sizeof(arr[0]))
 #define MAX(a, b) (a > b ? a : b)
 #define BLOCK(cmd, interval, signal) \
 	{ "echo \"$(" cmd ")\"", interval, signal }
+
 typedef const struct {
 	const char* command;
 	const unsigned int interval;
@@ -39,7 +38,7 @@ typedef const struct {
 static Display* dpy;
 static int screen;
 static Window root;
-static unsigned short int statusContinue = 1;
+static unsigned short statusContinue = 1;
 static char outputs[LEN(blocks)][CMDLENGTH + 1 + CLICKABLE_BLOCKS];
 static char statusBar[2][LEN(blocks) * (LEN(outputs[0]) - 1) + (LEN(blocks) - 1 + LEADING_DELIMITER) * (LEN(DELIMITER) - 1) + 1];
 static struct epoll_event event, events[LEN(blocks) + 2];
@@ -47,6 +46,7 @@ static int pipes[LEN(blocks)][2];
 static int timerPipe[2];
 static int signalFD;
 static int epollFD;
+static int execLock = 0;
 void (*writeStatus)();
 
 int gcd(int a, int b) {
@@ -65,14 +65,21 @@ void closePipe(int* pipe) {
 }
 
 void execBlock(int i, const char* button) {
+	// Ensure only one child process exists per block at an instance
+	if (execLock & 1 << i)
+		return;
+	// Lock execution of block until current instance finishes execution
+	execLock |= 1 << i;
+
 	if (fork() == 0) {
 		close(pipes[i][0]);
 		dup2(pipes[i][1], STDOUT_FILENO);
+		close(pipes[i][1]);
 
 		if (button)
 			setenv("BLOCK_BUTTON", button, 1);
-		execl("/bin/sh", "sh", "-c", blocks[i].command);
-		close(pipes[i][1]);
+		execl("/bin/sh", "sh", "-c", blocks[i].command, (char*)NULL);
+		_exit(1);
 	}
 }
 
@@ -103,15 +110,13 @@ void updateBlock(int i) {
 	char buffer[LEN(outputs[0]) - CLICKABLE_BLOCKS];
 	int bytesRead = read(pipes[i][0], buffer, LEN(buffer));
 
-	if (bytesRead == 1) {
-		output[0] = '\0';
-		return;
-	}
-
 	// Trim UTF-8 characters properly
 	int j = bytesRead - 1;
 	while ((buffer[j] & 0b11000000) == 0x80)
 		j--;
+
+	// Cache last character and replace it with a trailing space
+	char ch = buffer[j];
 	buffer[j] = ' ';
 
 	// Trim trailing spaces
@@ -119,21 +124,23 @@ void updateBlock(int i) {
 		j--;
 	buffer[j + 1] = '\0';
 
+	// Clear the pipe
 	if (bytesRead == LEN(buffer)) {
-		// Clear the pipe
-		char ch;
-		while (read(pipes[i][0], &ch, 1) == 1 && ch != '\n')
+		while (ch != '\n' && read(pipes[i][0], &ch, 1) == 1)
 			;
 	}
 
 #if CLICKABLE_BLOCKS
-	if (blocks[i].signal > 0) {
+	if (bytesRead > 1 && blocks[i].signal > 0) {
 		output[0] = blocks[i].signal;
 		output++;
 	}
 #endif
 
 	strcpy(output, buffer);
+
+	// Remove execution lock for the current block
+	execLock &= ~(1 << i);
 }
 
 void debug() {
@@ -162,18 +169,21 @@ void setRoot() {
 void signalHandler() {
 	struct signalfd_siginfo info;
 	read(signalFD, &info, sizeof(info));
+	unsigned int signal = info.ssi_signo;
+
+	// Update all blocks on receiving SIGUSR1
+	if (signal == SIGUSR1) {
+		execBlocks(0);
+		return;
+	}
 
 	for (int j = 0; j < LEN(blocks); j++) {
-		if (blocks[j].signal == info.ssi_signo - SIGRTMIN) {
+		if (blocks[j].signal == signal - SIGRTMIN) {
 			char button[] = {'0' + info.ssi_int & 0xff, 0};
 			execBlock(j, button);
 			break;
 		}
 	}
-
-	// Clear the pipe after each poll to limit number of signals handled
-	while (read(signalFD, &info, sizeof(info)) != -1)
-		;
 }
 
 void termHandler() {
@@ -181,8 +191,17 @@ void termHandler() {
 }
 
 void setupSignals() {
-	signal(SIGTERM, termHandler);
+	// Ignore SIGUSR1 and all realtime signals
+	sigset_t ignoredSignals;
+	sigemptyset(&ignoredSignals);
+	sigaddset(&ignoredSignals, SIGUSR1);
+	for (int i = SIGRTMIN; i <= SIGRTMAX; i++)
+		sigaddset(&ignoredSignals, i);
+	sigprocmask(SIG_BLOCK, &ignoredSignals, NULL);
+
+	// Handle termination signals
 	signal(SIGINT, termHandler);
+	signal(SIGTERM, termHandler);
 
 	// Avoid zombie subprocesses
 	struct sigaction sa;
@@ -192,28 +211,25 @@ void setupSignals() {
 	sigaction(SIGCHLD, &sa, 0);
 
 	// Handle block update signals
-	sigset_t sigset;
-	sigemptyset(&sigset);
+	sigset_t handledSignals;
+	sigemptyset(&handledSignals);
+	sigaddset(&handledSignals, SIGUSR1);
 	for (int i = 0; i < LEN(blocks); i++)
 		if (blocks[i].signal > 0)
-			sigaddset(&sigset, SIGRTMIN + blocks[i].signal);
-
-	signalFD = signalfd(-1, &sigset, 0);
-	fcntl(signalFD, F_SETFL, O_NONBLOCK);
-	sigprocmask(SIG_BLOCK, &sigset, NULL);
+			sigaddset(&handledSignals, SIGRTMIN + blocks[i].signal);
+	signalFD = signalfd(-1, &handledSignals, 0);
 	event.data.u32 = LEN(blocks) + 1;
 	epoll_ctl(epollFD, EPOLL_CTL_ADD, signalFD, &event);
 }
 
 void statusLoop() {
 	while (statusContinue) {
-		int eventCount = epoll_wait(epollFD, events, LEN(events), POLL_INTERVAL / 10);
-
+		int eventCount = epoll_wait(epollFD, events, LEN(events), -1);
 		for (int i = 0; i < eventCount; i++) {
-			unsigned int id = events[i].data.u32;
+			unsigned short id = events[i].data.u32;
 
 			if (id == LEN(blocks)) {
-				unsigned long long int j = 0;
+				unsigned int j = 0;
 				read(timerPipe[0], &j, sizeof(j));
 				execBlocks(j);
 			} else if (id < LEN(blocks)) {
@@ -222,12 +238,8 @@ void statusLoop() {
 				signalHandler();
 			}
 		}
-		if (eventCount)
+		if (eventCount != -1)
 			writeStatus();
-
-		// Poll every `POLL_INTERVAL` milliseconds
-		struct timespec toSleep = {.tv_nsec = POLL_INTERVAL * 1000000UL};
-		nanosleep(&toSleep, &toSleep);
 	}
 }
 
@@ -235,32 +247,32 @@ void timerLoop() {
 	close(timerPipe[0]);
 
 	unsigned int sleepInterval = 0;
-    unsigned int maxInterval = 0;
+	unsigned int maxInterval = 0;
 	for (int i = 0; i < LEN(blocks); i++)
 		if (blocks[i].interval) {
-            maxInterval = MAX(blocks[i].interval, maxInterval);
+			maxInterval = MAX(blocks[i].interval, maxInterval);
 			sleepInterval = gcd(blocks[i].interval, sleepInterval);
-        }
+		}
 
 	unsigned int i = 0;
 	struct timespec sleepTime = {sleepInterval, 0};
 	struct timespec toSleep = sleepTime;
 
-	while (1) {
-		// Sleep for `sleepTime` even on being interrupted
-		if (nanosleep(&toSleep, &toSleep) == -1)
-			continue;
-
+	while (statusContinue) {
 		// Notify parent to update blocks
 		write(timerPipe[1], &i, sizeof(i));
 
-		// After sleep, reset timer and update counter
+		// Wrap `i` to the interval [1, `maxInterval`]
+		i = (i + sleepInterval - 1) % maxInterval + 1;
+
+		// Sleep for `sleepTime` even on being interrupted
+		while (nanosleep(&toSleep, &toSleep) == -1)
+			;
 		toSleep = sleepTime;
-		// Wrap `i` to the interval [1, maxInterval]
-        i = (i + sleepInterval - 1) % maxInterval + 1;
 	}
 
 	close(timerPipe[1]);
+	_exit(0);
 }
 
 void init() {
@@ -288,10 +300,11 @@ int main(const int argc, const char* argv[]) {
 
 	init();
 
-	if (fork())
+	// Ensure that `timerLoop()` only runs in the fork
+	if (fork() == 0)
+		timerLoop();
+	else
 		statusLoop();
-    else
-        timerLoop();
 
 	close(epollFD);
 	close(signalFD);
@@ -300,4 +313,3 @@ int main(const int argc, const char* argv[]) {
 		closePipe(pipes[i]);
 	return 0;
 }
-
