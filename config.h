@@ -13,7 +13,7 @@ const Block blocks[] = {
     BLOCK("sb-mem",         10,     21),
     BLOCK("sb-gpu",         10,     22),
     BLOCK("sb-cpu",         10,     23),
-    BLOCK("sb-time",        1,      24),
+    //BLOCK("sb-time",        1,      24),
     BLOCK("sb-date",        1,      25),
     BLOCK("sb-uptime",      1,      26),
 };
